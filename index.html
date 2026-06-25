@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AntLOG — Procesador de nivel de canal by. Carlos Antequera 73420716</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg: #0A1628;
+    --surface: #0F1F3D;
+    --surface2: #162847;
+    --border: rgba(56, 189, 248, 0.15);
+    --accent: #38BDF8;
+    --accent-dim: rgba(56, 189, 248, 0.12);
+    --accent-mid: rgba(56, 189, 248, 0.35);
+    --text: #F0F9FF;
+    --text-muted: #7EA8C4;
+    --text-dim: #4A7A9B;
+    --success: #34D399;
+    --warning: #FBBF24;
+    --danger: #F87171;
+    --water: #0EA5E9;
+    --water-light: #7DD3FC;
+    --bed: #78716C;
+    --font-mono: 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    padding: 1.25rem 2rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background: var(--surface);
+  }
+
+  .logo-mark {
+    width: 36px; height: 36px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .logo-mark svg { width: 20px; height: 20px; }
+
+  header h1 {
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    color: var(--text);
+  }
+  header span {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    flex: 1;
+    gap: 0;
+  }
+
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .section-label {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 0.75rem;
+  }
+
+  .drop-zone {
+    border: 1.5px dashed var(--border);
+    border-radius: 10px;
+    padding: 2rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    background: var(--accent-dim);
+  }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(56,189,248,0.18);
+  }
+  .drop-zone svg { width: 32px; height: 32px; color: var(--accent); margin-bottom: 0.5rem; }
+  .drop-zone p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; }
+  .drop-zone em { color: var(--accent); font-style: normal; font-weight: 600; }
+  #file-input { display: none; }
+
+  .config-block { display: flex; flex-direction: column; gap: 0.75rem; }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .field label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-weight: 500;
+  }
+  .field input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    color: var(--text);
+    font-size: 0.875rem;
+    font-family: var(--font-mono);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .field input:focus { border-color: var(--accent); }
+  .field .hint { font-size: 0.7rem; color: var(--text-dim); }
+
+  .canal-preview {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem;
+  }
+  .canal-svg-wrap { width: 100%; }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+  .stat-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem;
+  }
+  .stat-card .val {
+    font-size: 1.25rem;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: var(--accent);
+  }
+  .stat-card .lbl {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .stat-card.water .val { color: var(--water-light); }
+  .stat-card.dry .val { color: var(--warning); }
+  .stat-card.max .val { color: var(--success); }
+
+  .export-btn {
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    border-radius: 8px;
+    padding: 0.65rem 1rem;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    width: 100%;
+    letter-spacing: 0.03em;
+    transition: opacity 0.15s;
+    display: flex; align-items: center; justify-content: center; gap: 0.4rem;
+  }
+  .export-btn:hover { opacity: 0.88; }
+  .export-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  .export-csv {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent-mid);
+    border-radius: 8px;
+    padding: 0.55rem 1rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    letter-spacing: 0.03em;
+    transition: background 0.15s;
+  }
+  .export-csv:hover { background: var(--accent-dim); }
+  .export-csv:disabled { opacity: 0.3; cursor: not-allowed; }
+
+  main {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    padding: 0 1.5rem;
+    gap: 0;
+  }
+  .tab {
+    padding: 0.9rem 1.25rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .tab-content { display: none; flex: 1; overflow: auto; padding: 1.5rem; }
+  .tab-content.active { display: block; }
+
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: var(--text-dim);
+    gap: 0.5rem;
+  }
+  .empty-state svg { width: 48px; height: 48px; opacity: 0.3; }
+  .empty-state p { font-size: 0.85rem; }
+
+  .chart-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .chart-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+  .chart-container { position: relative; width: 100%; height: 260px; }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    font-family: var(--font-mono);
+  }
+  th {
+    text-align: left;
+    padding: 0.6rem 1rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  td {
+    padding: 0.55rem 1rem;
+    border-bottom: 1px solid rgba(56,189,248,0.06);
+    color: var(--text-muted);
+  }
+  tr:hover td { background: var(--accent-dim); }
+  td.num { color: var(--text); }
+  td.water-val { color: var(--water-light); font-weight: 600; }
+  td.dry-row { color: var(--text-dim); font-style: italic; }
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .badge-water { background: rgba(14,165,233,0.18); color: var(--water-light); }
+  .badge-dry { background: rgba(120,113,108,0.25); color: #A8A29E; }
+
+  #file-name-display {
+    font-size: 0.72rem;
+    color: var(--accent);
+    text-align: center;
+    padding: 0.3rem 0;
+    display: none;
+  }
+
+  .divider-label {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+  }
+
+  @media (max-width: 860px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-mark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="#0A1628" stroke-width="2.5" stroke-linecap="round">
+      <path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/>
+      <line x1="3" y1="10" x2="21" y2="10" stroke-dasharray="2 2"/>
+      <line x1="12" y1="4" x2="12" y2="10"/>
+    </svg>
+  </div>
+  <h1>AntLOG <span>— Procesador de nivel de canal</span></h1>
+</header>
+
+<div class="layout">
+  <aside>
+    <div>
+      <div class="section-label">Archivo de datos</div>
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12M8 8l4-4 4 4"/>
+        </svg>
+        <p>Arrastra tu archivo <em>.TXT</em><br>o haz clic para seleccionar</p>
+      </div>
+      <input type="file" id="file-input" accept=".txt,.log,.csv">
+      <div id="file-name-display"></div>
+    </div>
+
+    <div>
+      <div class="section-label">Configuración del sensor</div>
+      <div class="config-block">
+        <div class="field">
+          <label>Distancia al lecho seco (cm)</label>
+          <input type="number" id="bed-dist" value="188" min="0" step="1">
+          <span class="hint">Distancia sensor → fondo del canal sin agua</span>
+        </div>
+        <div class="field">
+          <label>Umbral de caudal mínimo (cm)</label>
+          <input type="number" id="threshold" value="2" min="0" step="0.5">
+          <span class="hint">Tirante mínimo para considerar flujo activo</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="canal-preview">
+      <div class="section-label" style="margin-bottom:0.5rem">Vista de sección transversal</div>
+      <div class="canal-svg-wrap">
+        <svg id="canal-svg" viewBox="0 0 280 140" xmlns="http://www.w3.org/2000/svg" width="100%">
+          <rect width="280" height="140" fill="#0A1628" rx="6"/>
+          <text x="140" y="72" text-anchor="middle" fill="#4A7A9B" font-size="11" font-family="sans-serif">Carga un archivo</text>
+        </svg>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Estadísticas</div>
+      <div class="stats-grid">
+        <div class="stat-card"><div class="val" id="st-total">—</div><div class="lbl">Registros</div></div>
+        <div class="stat-card water"><div class="val" id="st-flow">—</div><div class="lbl">Con flujo</div></div>
+        <div class="stat-card max"><div class="val" id="st-max">—</div><div class="lbl">Tirante máx</div></div>
+        <div class="stat-card dry"><div class="val" id="st-mean">—</div><div class="lbl">Tirante medio</div></div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:0.5rem">
+      <button class="export-btn" id="btn-export-img" disabled onclick="exportChart()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        Exportar gráfico PNG
+      </button>
+      <button class="export-csv" id="btn-export-csv" disabled onclick="exportCSV()">Exportar datos CSV</button>
+    </div>
+  </aside>
+
+  <main>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('grafico', this)">Hidrograma</div>
+      <div class="tab" onclick="switchTab('tabla', this)">Tabla de datos</div>
+    </div>
+
+    <div class="tab-content active" id="tab-grafico">
+      <div class="empty-state" id="empty-chart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/><line x1="3" y1="8" x2="21" y2="8"/>
+          <line x1="3" y1="4" x2="3" y2="20"/><line x1="3" y1="20" x2="21" y2="20"/>
+        </svg>
+        <p>Carga un archivo .TXT para visualizar el hidrograma</p>
+      </div>
+      <div id="chart-area" style="display:none">
+        <div class="chart-wrap">
+          <div class="chart-title">Tirante hidráulico (cm)</div>
+          <div class="chart-container">
+            <canvas id="myChart" role="img" aria-label="Hidrograma de tirante hidráulico en el canal">Hidrograma de nivel del canal.</canvas>
+          </div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title">Distancia sensor → superficie (cm)</div>
+          <div class="chart-container">
+            <canvas id="myChart2" role="img" aria-label="Serie temporal de distancia medida por el sensor">Distancia medida por el sensor ultrasónico.</canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-tabla">
+      <div class="empty-state" id="empty-table">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/>
+          <line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/>
+        </svg>
+        <p>Carga un archivo .TXT para ver los datos procesados</p>
+      </div>
+      <div id="table-area" style="display:none; overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Fecha</th>
+              <th>Hora</th>
+              <th>Dist. sensor (cm)</th>
+              <th>Tirante h (cm)</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody id="data-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+let parsedData = [];
+let chartInstance1 = null;
+let chartInstance2 = null;
+
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) readFile(file);
+});
+fileInput.addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
+
+document.getElementById('bed-dist').addEventListener('input', () => { if (parsedData.length) processAndRender(); });
+document.getElementById('threshold').addEventListener('input', () => { if (parsedData.length) processAndRender(); });
+
+function readFile(file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const nameEl = document.getElementById('file-name-display');
+    nameEl.textContent = '📄 ' + file.name;
+    nameEl.style.display = 'block';
+    parseFile(e.target.result);
+  };
+  reader.readAsText(file);
+}
+
+function parseFile(text) {
+  const lines = text.trim().split('\n');
+  parsedData = [];
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = trimmed.match(/AntLOG\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+([\d.]+)\s*cm/i);
+    if (m) {
+      const [, dateStr, timeStr, distStr] = m;
+      const [d, mo, y] = dateStr.split('/');
+      const dt = new Date(`${y}-${mo}-${d}T${timeStr}`);
+      parsedData.push({ datetime: dt, date: dateStr, time: timeStr, dist: parseFloat(distStr) });
+    }
+  }
+  if (parsedData.length === 0) {
+    alert('No se encontraron registros válidos en el formato AntLOG. Verifica el archivo.');
+    return;
+  }
+  processAndRender();
+}
+
+function processAndRender() {
+  const bedDist = parseFloat(document.getElementById('bed-dist').value) || 188;
+  const threshold = parseFloat(document.getElementById('threshold').value) || 2;
+
+  const rows = parsedData.map(r => {
+    const h = bedDist - r.dist;
+    const flow = h > threshold;
+    return { ...r, h: Math.max(0, parseFloat(h.toFixed(1))), flow };
+  });
+
+  const withFlow = rows.filter(r => r.flow);
+  const maxH = rows.length ? Math.max(...rows.map(r => r.h)) : 0;
+  const meanH = withFlow.length ? (withFlow.reduce((a, b) => a + b.h, 0) / withFlow.length) : 0;
+
+  document.getElementById('st-total').textContent = rows.length;
+  document.getElementById('st-flow').textContent = withFlow.length;
+  document.getElementById('st-max').textContent = maxH.toFixed(1) + ' cm';
+  document.getElementById('st-mean').textContent = meanH.toFixed(1) + ' cm';
+
+  renderCanalSVG(bedDist, maxH, withFlow.length > 0 ? (withFlow[withFlow.length-1].h) : 0);
+  renderCharts(rows);
+  renderTable(rows);
+
+  document.getElementById('btn-export-img').disabled = false;
+  document.getElementById('btn-export-csv').disabled = false;
+}
+
+function renderCanalSVG(bedDist, maxH, currentH) {
+  const svg = document.getElementById('canal-svg');
+  const W = 280, H = 140;
+  const margin = { left: 30, right: 10, top: 20, bottom: 20 };
+  const cW = W - margin.left - margin.right;
+  const cH = H - margin.top - margin.bottom;
+
+  const sensorY = margin.top;
+  const bedY = margin.top + cH;
+  const totalRange = bedDist;
+  const waterY = bedDist > 0 ? bedY - (currentH / totalRange) * cH : bedY;
+
+  const trapW = cW * 0.85;
+  const trapX = margin.left + (cW - trapW) / 2;
+  const slopeOffset = 18;
+
+  let html = `<rect width="${W}" height="${H}" fill="#0A1628" rx="6"/>`;
+
+  html += `<line x1="${W/2}" y1="${sensorY}" x2="${W/2}" y2="${sensorY+10}" stroke="#38BDF8" stroke-width="1" stroke-dasharray="3 2"/>`;
+  html += `<text x="${W/2}" y="${sensorY - 4}" text-anchor="middle" fill="#38BDF8" font-size="8" font-family="sans-serif">SENSOR</text>`;
+
+  html += `<line x1="${margin.left}" y1="${sensorY + 12}" x2="${W - margin.right}" y2="${sensorY + 12}" stroke="#38BDF8" stroke-width="0.5" stroke-dasharray="2 3" opacity="0.4"/>`;
+
+  if (currentH > 0 && waterY < bedY) {
+    const wLeft = trapX + slopeOffset * ((bedY - waterY) / cH);
+    const wRight = trapX + trapW - slopeOffset * ((bedY - waterY) / cH);
+    html += `<polygon points="${wLeft},${waterY} ${wRight},${waterY} ${trapX + trapW - slopeOffset},${bedY} ${trapX + slopeOffset},${bedY}" fill="rgba(14,165,233,0.35)" stroke="none"/>`;
+    html += `<line x1="${wLeft}" y1="${waterY}" x2="${wRight}" y2="${waterY}" stroke="#7DD3FC" stroke-width="1.5"/>`;
+    html += `<text x="${W/2}" y="${waterY - 4}" text-anchor="middle" fill="#7DD3FC" font-size="8" font-family="sans-serif">h = ${currentH.toFixed(1)} cm</text>`;
+  }
+
+  html += `<polygon points="${trapX},${bedY - cH} ${trapX + trapW},${bedY - cH} ${trapX + trapW - slopeOffset},${bedY} ${trapX + slopeOffset},${bedY}" fill="none" stroke="#4A7A9B" stroke-width="1.5"/>`;
+
+  html += `<line x1="${trapX + slopeOffset - 2}" y1="${bedY}" x2="${trapX + trapW - slopeOffset + 2}" y2="${bedY}" stroke="#78716C" stroke-width="3"/>`;
+  html += `<text x="${W/2}" y="${bedY + 12}" text-anchor="middle" fill="#78716C" font-size="8" font-family="sans-serif">LECHO (${bedDist} cm)</text>`;
+
+  svg.innerHTML = html;
+}
+
+function renderCharts(rows) {
+  document.getElementById('empty-chart').style.display = 'none';
+  document.getElementById('chart-area').style.display = 'block';
+
+  const labels = rows.map(r => r.time);
+  const hData = rows.map(r => r.h);
+  const distData = rows.map(r => r.dist);
+
+  const tickColor = '#4A7A9B';
+  const gridColor = 'rgba(56,189,248,0.08)';
+
+  if (chartInstance1) chartInstance1.destroy();
+  chartInstance1 = new Chart(document.getElementById('myChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Tirante h (cm)',
+        data: hData,
+        borderColor: '#38BDF8',
+        backgroundColor: 'rgba(56,189,248,0.10)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: rows.length > 60 ? 0 : 3,
+        pointBackgroundColor: '#38BDF8',
+        borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        backgroundColor: '#0F1F3D',
+        titleColor: '#7EA8C4',
+        bodyColor: '#F0F9FF',
+        borderColor: 'rgba(56,189,248,0.3)',
+        borderWidth: 1,
+        callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} cm` }
+      }},
+      scales: {
+        x: { ticks: { color: tickColor, font: { size: 10 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 12 }, grid: { color: gridColor } },
+        y: { ticks: { color: tickColor, font: { size: 10 }, callback: v => v + ' cm' }, grid: { color: gridColor }, beginAtZero: true }
+      }
+    }
+  });
+
+  if (chartInstance2) chartInstance2.destroy();
+  chartInstance2 = new Chart(document.getElementById('myChart2'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Distancia (cm)',
+        data: distData,
+        borderColor: '#FBBF24',
+        backgroundColor: 'rgba(251,191,36,0.08)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: rows.length > 60 ? 0 : 3,
+        pointBackgroundColor: '#FBBF24',
+        borderWidth: 1.5,
+        borderDash: [],
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: {
+        backgroundColor: '#0F1F3D',
+        titleColor: '#7EA8C4',
+        bodyColor: '#F0F9FF',
+        borderColor: 'rgba(251,191,36,0.3)',
+        borderWidth: 1,
+        callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} cm` }
+      }},
+      scales: {
+        x: { ticks: { color: tickColor, font: { size: 10 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 12 }, grid: { color: gridColor } },
+        y: { ticks: { color: tickColor, font: { size: 10 }, callback: v => v + ' cm' }, grid: { color: gridColor }, reverse: true }
+      }
+    }
+  });
+}
+
+function renderTable(rows) {
+  document.getElementById('empty-table').style.display = 'none';
+  document.getElementById('table-area').style.display = 'block';
+  const tbody = document.getElementById('data-tbody');
+  tbody.innerHTML = rows.map((r, i) => `
+    <tr>
+      <td>${i + 1}</td>
+      <td>${r.date}</td>
+      <td>${r.time}</td>
+      <td class="num">${r.dist.toFixed(1)}</td>
+      <td class="${r.flow ? 'water-val' : 'dry-row'}">${r.h.toFixed(1)}</td>
+      <td><span class="badge ${r.flow ? 'badge-water' : 'badge-dry'}">${r.flow ? 'FLUJO' : 'SECO'}</span></td>
+    </tr>`).join('');
+}
+
+function switchTab(id, el) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-' + id).classList.add('active');
+}
+
+function exportChart() {
+  const canvas = document.getElementById('myChart');
+  const link = document.createElement('a');
+  link.download = 'hidrograma.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+function exportCSV() {
+  const bedDist = parseFloat(document.getElementById('bed-dist').value) || 188;
+  const threshold = parseFloat(document.getElementById('threshold').value) || 2;
+  const rows = parsedData.map(r => {
+    const h = Math.max(0, parseFloat((bedDist - r.dist).toFixed(1)));
+    return { ...r, h, flow: h > threshold };
+  });
+  const header = 'fecha,hora,distancia_sensor_cm,tirante_cm,estado\n';
+  const body = rows.map(r => `${r.date},${r.time},${r.dist.toFixed(1)},${r.h.toFixed(1)},${r.flow ? 'FLUJO' : 'SECO'}`).join('\n');
+  const blob = new Blob([header + body], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = 'datos_nivel_canal.csv';
+  link.click();
+}
+</script>
+</body>
+</html>
