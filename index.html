@@ -3,326 +3,509 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AntLOG — Procesador de nivel de canal by. Carlos Antequera 73420716</title>
+<title>AntLOG — Nivel de canal</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAejKROLfrMxM4GoKpAme30GhIRmWeuexY",
+  authDomain: "levellogger-41e15.firebaseapp.com",
+  projectId: "levellogger-41e15",
+  storageBucket: "levellogger-41e15.firebasestorage.app",
+  messagingSenderId: "696060573289",
+  appId: "1:696060573289:web:25a04db689d4e0869554f8"
+};
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── PIN ──────────────────────────────────────────────────────────────
+const OWNER_PIN_HASH = "e3b7b0c2a1f5d4e6"; // reemplaza con tu PIN hasheado (ver instrucciones)
+const PIN_KEY = "antlog_pin_ok";
+
+async function hashPin(pin) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(pin));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('').slice(0,16);
+}
+
+window.openPinModal = function() {
+  document.getElementById('pin-modal').style.display='flex';
+  document.getElementById('pin-input').value='';
+  document.getElementById('pin-error').style.display='none';
+  setTimeout(()=>document.getElementById('pin-input').focus(),80);
+};
+window.closePinModal = function() {
+  document.getElementById('pin-modal').style.display='none';
+};
+
+window.checkPin = async function() {
+  const val = document.getElementById('pin-input').value.trim();
+  if (!val) { showPinError('Ingresa tu PIN.'); return; }
+  const h = await hashPin(val);
+  if (h === '8f8ce445f6321556') { unlockOwner(); return; }
+  showPinError('PIN incorrecto.');
+};
+
+function showPinError(msg) {
+  const el = document.getElementById('pin-error');
+  el.textContent=msg; el.style.display='block';
+  document.getElementById('pin-input').value='';
+  document.getElementById('pin-input').focus();
+}
+function unlockOwner() {
+  window._isOwner = true;
+  closePinModal();
+  document.getElementById('owner-badge').style.display='inline-flex';
+  document.getElementById('btn-lock-owner').style.display='inline-block';
+  document.getElementById('btn-open-pin').style.display='none';
+  loadFirestoreCampaigns();
+}
+window.lockApp = function() {
+  window._isOwner = false;
+  document.getElementById('owner-badge').style.display='none';
+  document.getElementById('btn-lock-owner').style.display='none';
+  document.getElementById('btn-open-pin').style.display='inline-block';
+
+  renderHistorial();
+};
+
+// ── STATE ──────────────────────────────────────────────────────────
+let parsedData=[], chartInst1=null, chartInst2=null, histChartInst=null;
+let firestoreCampaigns=[];
+
+// ── FILE ──────────────────────────────────────────────────────────
+const dropZone=document.getElementById('drop-zone');
+const fileInput=document.getElementById('file-input');
+dropZone.addEventListener('dragover',e=>{e.preventDefault();dropZone.classList.add('drag-over');});
+dropZone.addEventListener('dragleave',()=>dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop',e=>{e.preventDefault();dropZone.classList.remove('drag-over');if(e.dataTransfer.files[0])readFile(e.dataTransfer.files[0]);});
+fileInput.addEventListener('change',e=>{if(e.target.files[0])readFile(e.target.files[0]);});
+document.getElementById('bed-dist').addEventListener('input',()=>{if(parsedData.length)processAndRender();});
+document.getElementById('threshold').addEventListener('input',()=>{if(parsedData.length)processAndRender();});
+
+function readFile(file) {
+  const reader=new FileReader();
+  reader.onload=e=>{
+    document.getElementById('file-name-display').textContent='📄 '+file.name;
+    document.getElementById('file-name-display').style.display='block';
+    parseFile(e.target.result, file.name);
+  };
+  reader.readAsText(file);
+}
+
+function parseFile(text, fileName) {
+  const lines=text.trim().split('\n');
+  parsedData=[];
+  for(const line of lines){
+    const m=line.trim().match(/AntLOG\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+([\d.]+)\s*cm/i);
+    if(m){
+      const [,dateStr,timeStr,distStr]=m;
+      const [d,mo,y]=dateStr.split('/');
+      parsedData.push({datetime:new Date(`${y}-${mo}-${d}T${timeStr}`),date:dateStr,time:timeStr,dist:parseFloat(distStr)});
+    }
+  }
+  if(!parsedData.length){showToast('No se encontraron registros AntLOG válidos.',true);return;}
+  processAndRender();
+  uploadToFirestore(fileName);
+}
+
+// ── PROCESS ───────────────────────────────────────────────────────
+function processAndRender() {
+  const bedDist=parseFloat(document.getElementById('bed-dist').value)||188;
+  const threshold=parseFloat(document.getElementById('threshold').value)||2;
+  const rows=parsedData.map(r=>{
+    const h=bedDist-r.dist;
+    return{...r,h:Math.max(0,parseFloat(h.toFixed(1))),flow:h>threshold};
+  });
+  const withFlow=rows.filter(r=>r.flow);
+  const maxH=rows.length?Math.max(...rows.map(r=>r.h)):0;
+  const meanH=withFlow.length?withFlow.reduce((a,b)=>a+b.h,0)/withFlow.length:0;
+  document.getElementById('st-total').textContent=rows.length;
+  document.getElementById('st-flow').textContent=withFlow.length;
+  document.getElementById('st-max').textContent=maxH.toFixed(1)+' cm';
+  document.getElementById('st-mean').textContent=meanH.toFixed(1)+' cm';
+  renderCanalSVG(bedDist,maxH,withFlow.length?withFlow[withFlow.length-1].h:0);
+  renderCharts(rows);
+  renderTable(rows);
+  document.getElementById('btn-export-img').disabled=false;
+  document.getElementById('btn-export-csv').disabled=false;
+}
+
+function renderCanalSVG(bedDist,maxH,currentH){
+  const svg=document.getElementById('canal-svg');
+  const W=280,H=140,ml=30,mr=10,mt=20,mb=20,cW=W-ml-mr,cH=H-mt-mb;
+  const bedY=mt+cH,waterY=bedDist>0?bedY-(currentH/bedDist)*cH:bedY;
+  const trapW=cW*0.85,trapX=ml+(cW-trapW)/2,slope=18;
+  let html=`<rect width="${W}" height="${H}" fill="#0A1628" rx="6"/>`;
+  html+=`<line x1="${W/2}" y1="${mt}" x2="${W/2}" y2="${mt+10}" stroke="#38BDF8" stroke-width="1" stroke-dasharray="3 2"/>`;
+  html+=`<text x="${W/2}" y="${mt-4}" text-anchor="middle" fill="#38BDF8" font-size="8" font-family="sans-serif">SENSOR</text>`;
+  if(currentH>0&&waterY<bedY){
+    const wL=trapX+slope*((bedY-waterY)/cH),wR=trapX+trapW-slope*((bedY-waterY)/cH);
+    html+=`<polygon points="${wL},${waterY} ${wR},${waterY} ${trapX+trapW-slope},${bedY} ${trapX+slope},${bedY}" fill="rgba(14,165,233,0.35)"/>`;
+    html+=`<line x1="${wL}" y1="${waterY}" x2="${wR}" y2="${waterY}" stroke="#7DD3FC" stroke-width="1.5"/>`;
+    html+=`<text x="${W/2}" y="${waterY-4}" text-anchor="middle" fill="#7DD3FC" font-size="8" font-family="sans-serif">h = ${currentH.toFixed(1)} cm</text>`;
+  }
+  html+=`<polygon points="${trapX},${bedY-cH} ${trapX+trapW},${bedY-cH} ${trapX+trapW-slope},${bedY} ${trapX+slope},${bedY}" fill="none" stroke="#4A7A9B" stroke-width="1.5"/>`;
+  html+=`<line x1="${trapX+slope-2}" y1="${bedY}" x2="${trapX+trapW-slope+2}" y2="${bedY}" stroke="#78716C" stroke-width="3"/>`;
+  html+=`<text x="${W/2}" y="${bedY+12}" text-anchor="middle" fill="#78716C" font-size="8" font-family="sans-serif">LECHO (${bedDist} cm)</text>`;
+  svg.innerHTML=html;
+}
+
+function renderCharts(rows){
+  document.getElementById('empty-chart').style.display='none';
+  document.getElementById('chart-area').style.display='block';
+  const labels=rows.map(r=>r.time),hData=rows.map(r=>r.h),dData=rows.map(r=>r.dist);
+  const tick='#4A7A9B',grid='rgba(56,189,248,0.08)',pts=rows.length>60?0:3;
+  if(chartInst1)chartInst1.destroy();
+  chartInst1=new Chart(document.getElementById('myChart'),{type:'line',data:{labels,datasets:[{label:'h (cm)',data:hData,borderColor:'#38BDF8',backgroundColor:'rgba(56,189,248,0.10)',fill:true,tension:0.3,pointRadius:pts,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0F1F3D',titleColor:'#7EA8C4',bodyColor:'#F0F9FF',borderColor:'rgba(56,189,248,0.3)',borderWidth:1,callbacks:{label:c=>` ${c.parsed.y.toFixed(1)} cm`}}},scales:{x:{ticks:{color:tick,font:{size:10},maxRotation:45,autoSkip:true,maxTicksLimit:12},grid:{color:grid}},y:{ticks:{color:tick,font:{size:10},callback:v=>v+' cm'},grid:{color:grid},beginAtZero:true}}}});
+  if(chartInst2)chartInst2.destroy();
+  chartInst2=new Chart(document.getElementById('myChart2'),{type:'line',data:{labels,datasets:[{label:'Dist (cm)',data:dData,borderColor:'#FBBF24',backgroundColor:'rgba(251,191,36,0.08)',fill:true,tension:0.3,pointRadius:pts,borderWidth:1.5}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0F1F3D',titleColor:'#7EA8C4',bodyColor:'#F0F9FF',borderColor:'rgba(251,191,36,0.3)',borderWidth:1,callbacks:{label:c=>` ${c.parsed.y.toFixed(1)} cm`}}},scales:{x:{ticks:{color:tick,font:{size:10},maxRotation:45,autoSkip:true,maxTicksLimit:12},grid:{color:grid}},y:{ticks:{color:tick,font:{size:10},callback:v=>v+' cm'},grid:{color:grid},reverse:true}}}});
+}
+
+function renderTable(rows){
+  document.getElementById('empty-table').style.display='none';
+  document.getElementById('table-area').style.display='block';
+  document.getElementById('data-tbody').innerHTML=rows.map((r,i)=>`
+    <tr><td>${i+1}</td><td>${r.date}</td><td>${r.time}</td>
+    <td class="num">${r.dist.toFixed(1)}</td>
+    <td class="${r.flow?'water-val':'dry-row'}">${r.h.toFixed(1)}</td>
+    <td><span class="badge ${r.flow?'badge-water':'badge-dry'}">${r.flow?'FLUJO':'SECO'}</span></td></tr>`).join('');
+}
+
+// ── FIRESTORE UPLOAD ──────────────────────────────────────────────
+async function uploadToFirestore(fileName) {
+  const bedDist=parseFloat(document.getElementById('bed-dist').value)||188;
+  const threshold=parseFloat(document.getElementById('threshold').value)||2;
+  const rows=parsedData.map(r=>{
+    const h=Math.max(0,parseFloat((bedDist-r.dist).toFixed(1)));
+    return{date:r.date,time:r.time,dist:r.dist,h,flow:h>threshold};
+  });
+  const maxH=rows.length?Math.max(...rows.map(r=>r.h)):0;
+  const meanH=rows.filter(r=>r.flow).length?rows.filter(r=>r.flow).reduce((a,b)=>a+b.h,0)/rows.filter(r=>r.flow).length:0;
+  const dateRange=rows.length?(rows[0].date===rows[rows.length-1].date?rows[0].date:`${rows[0].date} → ${rows[rows.length-1].date}`):'—';
+  try {
+    showToast('Guardando en la nube…');
+    await addDoc(collection(db,'campaigns'),{
+      fileName, dateRange,
+      importedAt: new Date().toISOString(),
+      device: navigator.userAgent.slice(0,80),
+      records: rows.length,
+      maxH: parseFloat(maxH.toFixed(1)),
+      meanH: parseFloat(meanH.toFixed(1)),
+      bedDist, threshold, rows
+    });
+    showToast(`"${fileName}" guardado en la nube ✓`);
+  } catch(e) {
+    showToast('Error al guardar en Firestore: '+e.message, true);
+  }
+}
+
+// ── FIRESTORE READ (solo owner) ───────────────────────────────────
+async function loadFirestoreCampaigns() {
+  document.getElementById('hist-loading').style.display='flex';
+  document.getElementById('empty-hist').style.display='none';
+  try {
+    const snap=await getDocs(query(collection(db,'campaigns'),orderBy('importedAt','desc')));
+    firestoreCampaigns=snap.docs.map(d=>({id:d.id,...d.data()}));
+    renderHistorial();
+  } catch(e) {
+    showToast('Error al cargar historial: '+e.message,true);
+  } finally {
+    document.getElementById('hist-loading').style.display='none';
+  }
+}
+
+window.deleteCampaign = async function(id,e) {
+  e.stopPropagation();
+  if(!confirm('¿Eliminar esta campaña de Firestore?'))return;
+  try {
+    await deleteDoc(doc(db,'campaigns',id));
+    firestoreCampaigns=firestoreCampaigns.filter(c=>c.id!==id);
+    renderHistorial();
+    showToast('Campaña eliminada.',true);
+  } catch(err) { showToast('Error: '+err.message,true); }
+};
+
+// ── HISTORIAL ─────────────────────────────────────────────────────
+function renderHistorial(){
+  const camps=firestoreCampaigns;
+  const list=document.getElementById('campaign-list');
+  const empty=document.getElementById('empty-hist');
+  document.getElementById('hist-badge').textContent=camps.length;
+
+  if(!window._isOwner){
+    list.innerHTML='';
+    document.getElementById('hist-summary-section').style.display='none';
+    empty.style.display='none';
+    document.getElementById('hist-lock-msg').style.display='flex';
+    return;
+  }
+  document.getElementById('hist-lock-msg').style.display='none';
+
+  if(!camps.length){
+    list.innerHTML=''; empty.style.display='flex';
+    document.getElementById('hist-summary-section').style.display='none';
+    return;
+  }
+  empty.style.display='none';
+  document.getElementById('hist-summary-section').style.display='block';
+
+  const totalRec=camps.reduce((a,c)=>a+c.records,0);
+  const globalMax=Math.max(...camps.map(c=>c.maxH));
+  const allDates=new Set();
+  camps.forEach(c=>(c.rows||[]).forEach(r=>allDates.add(r.date)));
+  document.getElementById('hs-campaigns').textContent=camps.length;
+  document.getElementById('hs-total').textContent=totalRec;
+  document.getElementById('hs-maxh').textContent=globalMax.toFixed(1)+' cm';
+  document.getElementById('hs-days').textContent=allDates.size;
+
+  list.innerHTML=camps.map(c=>`
+    <div class="campaign-card" onclick="loadCampaignView('${c.id}')">
+      <div class="cc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="16" height="16"><path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/><line x1="3" y1="8" x2="21" y2="8"/></svg></div>
+      <div class="cc-info">
+        <div class="cc-name">${c.fileName}</div>
+        <div class="cc-meta">${c.dateRange} · ${new Date(c.importedAt).toLocaleString('es')}</div>
+        <div class="cc-device">${(c.device||'').slice(0,60)}</div>
+      </div>
+      <div class="cc-stats">
+        <div class="cc-max">${c.maxH.toFixed(1)} cm</div>
+        <div class="cc-records">${c.records} reg.</div>
+      </div>
+      <button class="cc-del" onclick="deleteCampaign('${c.id}',event)" title="Eliminar">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+      </button>
+    </div>`).join('');
+
+  renderHistChart(camps);
+  updateHeaderCounters();
+}
+
+function renderHistChart(camps){
+  const dailyMap={};
+  camps.forEach(c=>{(c.rows||[]).forEach(r=>{if(!dailyMap[r.date]||r.h>dailyMap[r.date])dailyMap[r.date]=r.h;});});
+  const sorted=Object.keys(dailyMap).sort((a,b)=>{const pa=a.split('/'),pb=b.split('/');return new Date(`${pa[2]}-${pa[1]}-${pa[0]}`)-new Date(`${pb[2]}-${pb[1]}-${pb[0]}`);});
+  if(histChartInst)histChartInst.destroy();
+  histChartInst=new Chart(document.getElementById('histChart'),{type:'bar',data:{labels:sorted,datasets:[{label:'Tirante máx. diario (cm)',data:sorted.map(d=>dailyMap[d]),backgroundColor:'rgba(56,189,248,0.25)',borderColor:'#38BDF8',borderWidth:1.5,borderRadius:3}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#0F1F3D',titleColor:'#7EA8C4',bodyColor:'#F0F9FF',borderColor:'rgba(56,189,248,0.3)',borderWidth:1,callbacks:{label:c=>` ${c.parsed.y.toFixed(1)} cm máx`}}},scales:{x:{ticks:{color:'#4A7A9B',font:{size:10},maxRotation:45,autoSkip:true,maxTicksLimit:16},grid:{color:'rgba(56,189,248,0.06)'}},y:{ticks:{color:'#4A7A9B',font:{size:10},callback:v=>v+' cm'},grid:{color:'rgba(56,189,248,0.06)'},beginAtZero:true}}}});
+}
+
+window.loadCampaignView = function(id){
+  const camp=firestoreCampaigns.find(c=>c.id===id);
+  if(!camp)return;
+  parsedData=(camp.rows||[]).map(r=>({
+    datetime:new Date(`${r.date.split('/').reverse().join('-')}T${r.time}`),
+    date:r.date,time:r.time,dist:r.dist
+  }));
+  document.getElementById('bed-dist').value=camp.bedDist;
+  document.getElementById('threshold').value=camp.threshold;
+  document.getElementById('file-name-display').textContent='📄 '+camp.fileName;
+  document.getElementById('file-name-display').style.display='block';
+  processAndRender();
+  switchTab('grafico',document.querySelectorAll('.tab')[0]);
+  showToast(`Campaña "${camp.fileName}" cargada.`);
+};
+
+window.clearAllHistory = async function(){
+  if(!confirm('¿Borrar TODAS las campañas de Firestore? No se puede deshacer.'))return;
+  try {
+    await Promise.all(firestoreCampaigns.map(c=>deleteDoc(doc(db,'campaigns',c.id))));
+    firestoreCampaigns=[];
+    renderHistorial();
+    showToast('Historial borrado.',true);
+  } catch(e){showToast('Error: '+e.message,true);}
+};
+
+// ── EXPORTS ───────────────────────────────────────────────────────
+window.exportChart=function(){
+  const link=document.createElement('a');link.download='hidrograma.png';
+  link.href=document.getElementById('myChart').toDataURL('image/png');link.click();
+};
+window.exportCSV=function(all=false){
+  const header='fecha,hora,distancia_sensor_cm,tirante_cm,estado,archivo\n';
+  let rows=[];
+  if(all){
+    firestoreCampaigns.forEach(c=>{(c.rows||[]).forEach(r=>{rows.push(`${r.date},${r.time},${r.dist.toFixed(1)},${r.h.toFixed(1)},${r.flow?'FLUJO':'SECO'},"${c.fileName}"`);});});
+  } else {
+    const bd=parseFloat(document.getElementById('bed-dist').value)||188;
+    const th=parseFloat(document.getElementById('threshold').value)||2;
+    const fn=document.getElementById('file-name-display').textContent.replace('📄 ','');
+    parsedData.forEach(r=>{const h=Math.max(0,parseFloat((bd-r.dist).toFixed(1)));rows.push(`${r.date},${r.time},${r.dist.toFixed(1)},${h.toFixed(1)},${h>th?'FLUJO':'SECO'},"${fn}"`);});
+  }
+  if(!rows.length){showToast('No hay datos para exportar.',true);return;}
+  const blob=new Blob([header+rows.join('\n')],{type:'text/csv;charset=utf-8;'});
+  const link=document.createElement('a');link.href=URL.createObjectURL(blob);
+  link.download=all?'antlog_historico.csv':'antlog_sesion.csv';link.click();
+  showToast(`CSV exportado (${rows.length} filas).`);
+};
+
+// ── UI HELPERS ────────────────────────────────────────────────────
+function updateHeaderCounters(){
+  document.getElementById('hdr-campaigns').textContent=firestoreCampaigns.length;
+  document.getElementById('hdr-records').textContent=firestoreCampaigns.reduce((a,c)=>a+c.records,0);
+}
+window.switchTab=function(id,el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+id).classList.add('active');
+};
+function showToast(msg,warn=false){
+  const t=document.getElementById('toast'),d=document.getElementById('toast-dot');
+  document.getElementById('toast-msg').textContent=msg;
+  d.className='toast-dot'+(warn?' warn':'');
+  t.classList.add('show');
+  clearTimeout(window._toastTimer);
+  window._toastTimer=setTimeout(()=>t.classList.remove('show'),3200);
+}
+
+// ── INIT ──────────────────────────────────────────────────────────
+document.getElementById('pin-input').addEventListener('keydown',e=>{if(e.key==='Enter')window.checkPin();});
+document.getElementById('pin-modal').addEventListener('click',e=>{if(e.target===document.getElementById('pin-modal'))closePinModal();});
+</script>
 <style>
-  :root {
-    --bg: #0A1628;
-    --surface: #0F1F3D;
-    --surface2: #162847;
-    --border: rgba(56, 189, 248, 0.15);
-    --accent: #38BDF8;
-    --accent-dim: rgba(56, 189, 248, 0.12);
-    --accent-mid: rgba(56, 189, 248, 0.35);
-    --text: #F0F9FF;
-    --text-muted: #7EA8C4;
-    --text-dim: #4A7A9B;
-    --success: #34D399;
-    --warning: #FBBF24;
-    --danger: #F87171;
-    --water: #0EA5E9;
-    --water-light: #7DD3FC;
-    --bed: #78716C;
-    --font-mono: 'Courier New', monospace;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root{--bg:#0A1628;--surface:#0F1F3D;--border:rgba(56,189,248,0.15);--accent:#38BDF8;--accent-dim:rgba(56,189,248,0.12);--accent-mid:rgba(56,189,248,0.35);--text:#F0F9FF;--text-muted:#7EA8C4;--text-dim:#4A7A9B;--success:#34D399;--warning:#FBBF24;--danger:#F87171;--water-light:#7DD3FC;--font-mono:'Courier New',monospace;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;}
 
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
+  /* PIN MODAL */
+  #pin-modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:0;}
+  .pin-box{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.75rem;display:flex;flex-direction:column;align-items:center;gap:0.85rem;width:290px;position:relative;}
+  .pin-box h2{font-size:1rem;font-weight:600;color:var(--text);}
+  .pin-close{position:absolute;top:.75rem;right:.75rem;background:transparent;border:none;color:var(--text-dim);cursor:pointer;font-size:1.1rem;line-height:1;padding:2px 6px;border-radius:5px;}
+  .pin-close:hover{color:var(--text);}
+  .logo-big{width:42px;height:42px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;}
+  .logo-big svg{width:24px;height:24px;}
+  #pin-input,#pin-confirm{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.6rem 1rem;color:var(--text);font-size:1.2rem;font-family:var(--font-mono);text-align:center;letter-spacing:0.3em;width:100%;outline:none;transition:border-color .2s;}
+  #pin-input:focus,#pin-confirm:focus{border-color:var(--accent);}
+  #pin-first-setup{font-size:0.7rem;color:var(--text-dim);text-align:center;display:none;}
+  #pin-error{font-size:0.75rem;color:var(--danger);display:none;}
 
-  header {
-    padding: 1.25rem 2rem;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    background: var(--surface);
-  }
+  /* HEADER */
+  header{padding:1rem 1.5rem;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:1rem;background:var(--surface);}
+  .logo-mark{width:34px;height:34px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;}
+  .logo-mark svg{width:18px;height:18px;}
+  header h1{font-size:.95rem;font-weight:600;letter-spacing:.05em;}
+  header h1 span{font-size:.72rem;color:var(--text-muted);margin-left:.4rem;font-weight:400;}
+  .header-right{margin-left:auto;display:flex;align-items:center;gap:.6rem;}
+  .mem-indicator{font-size:.68rem;color:var(--text-dim);font-family:var(--font-mono);background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:.18rem .45rem;}
+  .mem-indicator span{color:var(--success);}
+  #owner-badge{display:none;background:rgba(52,211,153,.15);border:1px solid rgba(52,211,153,.35);border-radius:5px;padding:.18rem .5rem;font-size:.68rem;color:var(--success);font-weight:600;align-items:center;gap:.3rem;}
+  .lock-btn{background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-dim);padding:.28rem .55rem;font-size:.7rem;cursor:pointer;transition:color .15s;}
+  .lock-btn:hover{color:var(--accent);border-color:var(--accent-mid);}
 
-  .logo-mark {
-    width: 36px; height: 36px;
-    background: var(--accent);
-    border-radius: 8px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .logo-mark svg { width: 20px; height: 20px; }
+  /* LAYOUT */
+  .layout{display:grid;grid-template-columns:310px 1fr;flex:1;}
+  aside{background:var(--surface);border-right:1px solid var(--border);padding:1.25rem;display:flex;flex-direction:column;gap:1.25rem;overflow-y:auto;max-height:calc(100vh - 58px);}
+  .section-label{font-size:.63rem;font-weight:700;letter-spacing:.12em;color:var(--text-dim);text-transform:uppercase;margin-bottom:.65rem;}
+  .drop-zone{border:1.5px dashed var(--border);border-radius:10px;padding:1.25rem 1rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;background:var(--accent-dim);}
+  .drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:rgba(56,189,248,.18);}
+  .drop-zone svg{width:26px;height:26px;color:var(--accent);margin-bottom:.35rem;}
+  .drop-zone p{font-size:.8rem;color:var(--text-muted);line-height:1.4;}
+  .drop-zone em{color:var(--accent);font-style:normal;font-weight:600;}
+  #file-input{display:none;}
+  #file-name-display{font-size:.7rem;color:var(--accent);text-align:center;padding:.25rem 0;display:none;}
+  .config-block{display:flex;flex-direction:column;gap:.65rem;}
+  .field{display:flex;flex-direction:column;gap:.25rem;}
+  .field label{font-size:.72rem;color:var(--text-muted);font-weight:500;}
+  .field input{background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:.45rem .7rem;color:var(--text);font-size:.85rem;font-family:var(--font-mono);outline:none;transition:border-color .2s;}
+  .field input:focus{border-color:var(--accent);}
+  .field .hint{font-size:.67rem;color:var(--text-dim);}
+  .canal-preview{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:.85rem;}
+  .stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:.45rem;}
+  .stat-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:.65rem;}
+  .stat-card .val{font-size:1.1rem;font-weight:700;font-family:var(--font-mono);color:var(--accent);}
+  .stat-card .lbl{font-size:.62rem;color:var(--text-dim);margin-top:2px;text-transform:uppercase;letter-spacing:.08em;}
+  .stat-card.water .val{color:var(--water-light);}
+  .stat-card.max .val{color:var(--success);}
+  .stat-card.dry .val{color:var(--warning);}
+  .export-btn{background:var(--accent);color:var(--bg);border:none;border-radius:8px;padding:.6rem 1rem;font-size:.82rem;font-weight:700;cursor:pointer;width:100%;transition:opacity .15s;display:flex;align-items:center;justify-content:center;gap:.4rem;}
+  .export-btn:hover{opacity:.88;}
+  .export-btn:disabled{opacity:.3;cursor:not-allowed;}
+  .export-csv{background:transparent;color:var(--accent);border:1px solid var(--accent-mid);border-radius:8px;padding:.5rem 1rem;font-size:.78rem;font-weight:600;cursor:pointer;width:100%;transition:background .15s;}
+  .export-csv:hover{background:var(--accent-dim);}
+  .export-csv:disabled{opacity:.3;cursor:not-allowed;}
 
-  header h1 {
-    font-size: 1rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    color: var(--text);
-  }
-  header span {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-left: 0.5rem;
-    font-weight: 400;
-    letter-spacing: 0;
-  }
+  /* MAIN */
+  main{display:flex;flex-direction:column;overflow:hidden;}
+  .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--surface);padding:0 1.25rem;}
+  .tab{padding:.85rem 1.1rem;font-size:.78rem;font-weight:600;color:var(--text-muted);cursor:pointer;border-bottom:2px solid transparent;transition:color .15s,border-color .15s;letter-spacing:.04em;}
+  .tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+  .tab-badge{display:inline-flex;align-items:center;justify-content:center;background:var(--accent-dim);color:var(--accent);font-size:.58rem;font-weight:700;border-radius:10px;padding:1px 5px;margin-left:5px;min-width:16px;}
+  .tab-content{display:none;flex:1;overflow:auto;padding:1.25rem;}
+  .tab-content.active{display:block;}
+  .empty-state{display:flex;flex-direction:column;align-items:center;justify-content:center;height:280px;color:var(--text-dim);gap:.5rem;}
+  .empty-state svg{width:44px;height:44px;opacity:.3;}
+  .empty-state p{font-size:.82rem;text-align:center;line-height:1.6;}
+  .chart-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:1.1rem;margin-bottom:1.1rem;}
+  .chart-title{font-size:.72rem;font-weight:600;color:var(--text-muted);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.85rem;}
+  .chart-container{position:relative;width:100%;height:240px;}
+  table{width:100%;border-collapse:collapse;font-size:.8rem;font-family:var(--font-mono);}
+  th{text-align:left;padding:.55rem .9rem;font-size:.62rem;font-weight:700;letter-spacing:.1em;color:var(--text-dim);text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap;}
+  td{padding:.5rem .9rem;border-bottom:1px solid rgba(56,189,248,.06);color:var(--text-muted);}
+  tr:hover td{background:var(--accent-dim);}
+  td.num{color:var(--text);}
+  td.water-val{color:var(--water-light);font-weight:600;}
+  td.dry-row{color:var(--text-dim);font-style:italic;}
+  .badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:.62rem;font-weight:700;letter-spacing:.06em;}
+  .badge-water{background:rgba(14,165,233,.18);color:var(--water-light);}
+  .badge-dry{background:rgba(120,113,108,.25);color:#A8A29E;}
 
-  .layout {
-    display: grid;
-    grid-template-columns: 320px 1fr;
-    flex: 1;
-    gap: 0;
-  }
-
-  aside {
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
-  }
-
-  .section-label {
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    margin-bottom: 0.75rem;
-  }
-
-  .drop-zone {
-    border: 1.5px dashed var(--border);
-    border-radius: 10px;
-    padding: 2rem 1rem;
-    text-align: center;
-    cursor: pointer;
-    transition: border-color 0.2s, background 0.2s;
-    background: var(--accent-dim);
-  }
-  .drop-zone:hover, .drop-zone.drag-over {
-    border-color: var(--accent);
-    background: rgba(56,189,248,0.18);
-  }
-  .drop-zone svg { width: 32px; height: 32px; color: var(--accent); margin-bottom: 0.5rem; }
-  .drop-zone p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; }
-  .drop-zone em { color: var(--accent); font-style: normal; font-weight: 600; }
-  #file-input { display: none; }
-
-  .config-block { display: flex; flex-direction: column; gap: 0.75rem; }
-
-  .field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-  }
-  .field label {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    font-weight: 500;
-  }
-  .field input {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.5rem 0.75rem;
-    color: var(--text);
-    font-size: 0.875rem;
-    font-family: var(--font-mono);
-    outline: none;
-    transition: border-color 0.2s;
-  }
-  .field input:focus { border-color: var(--accent); }
-  .field .hint { font-size: 0.7rem; color: var(--text-dim); }
-
-  .canal-preview {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1rem;
-  }
-  .canal-svg-wrap { width: 100%; }
-
-  .stats-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.5rem;
-  }
-  .stat-card {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.75rem;
-  }
-  .stat-card .val {
-    font-size: 1.25rem;
-    font-weight: 700;
-    font-family: var(--font-mono);
-    color: var(--accent);
-  }
-  .stat-card .lbl {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    margin-top: 2px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  .stat-card.water .val { color: var(--water-light); }
-  .stat-card.dry .val { color: var(--warning); }
-  .stat-card.max .val { color: var(--success); }
-
-  .export-btn {
-    background: var(--accent);
-    color: var(--bg);
-    border: none;
-    border-radius: 8px;
-    padding: 0.65rem 1rem;
-    font-size: 0.85rem;
-    font-weight: 700;
-    cursor: pointer;
-    width: 100%;
-    letter-spacing: 0.03em;
-    transition: opacity 0.15s;
-    display: flex; align-items: center; justify-content: center; gap: 0.4rem;
-  }
-  .export-btn:hover { opacity: 0.88; }
-  .export-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  .export-csv {
-    background: transparent;
-    color: var(--accent);
-    border: 1px solid var(--accent-mid);
-    border-radius: 8px;
-    padding: 0.55rem 1rem;
-    font-size: 0.8rem;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-    letter-spacing: 0.03em;
-    transition: background 0.15s;
-  }
-  .export-csv:hover { background: var(--accent-dim); }
-  .export-csv:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  main {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-
-  .tabs {
-    display: flex;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    padding: 0 1.5rem;
-    gap: 0;
-  }
-  .tab {
-    padding: 0.9rem 1.25rem;
-    font-size: 0.8rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: color 0.15s, border-color 0.15s;
-    letter-spacing: 0.04em;
-  }
-  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-
-  .tab-content { display: none; flex: 1; overflow: auto; padding: 1.5rem; }
-  .tab-content.active { display: block; }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 300px;
-    color: var(--text-dim);
-    gap: 0.5rem;
-  }
-  .empty-state svg { width: 48px; height: 48px; opacity: 0.3; }
-  .empty-state p { font-size: 0.85rem; }
-
-  .chart-wrap {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.25rem;
-    margin-bottom: 1.25rem;
-  }
-  .chart-title {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    margin-bottom: 1rem;
-  }
-  .chart-container { position: relative; width: 100%; height: 260px; }
-
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.82rem;
-    font-family: var(--font-mono);
-  }
-  th {
-    text-align: left;
-    padding: 0.6rem 1rem;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  td {
-    padding: 0.55rem 1rem;
-    border-bottom: 1px solid rgba(56,189,248,0.06);
-    color: var(--text-muted);
-  }
-  tr:hover td { background: var(--accent-dim); }
-  td.num { color: var(--text); }
-  td.water-val { color: var(--water-light); font-weight: 600; }
-  td.dry-row { color: var(--text-dim); font-style: italic; }
-  .badge {
-    display: inline-block;
-    padding: 2px 7px;
-    border-radius: 4px;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-  }
-  .badge-water { background: rgba(14,165,233,0.18); color: var(--water-light); }
-  .badge-dry { background: rgba(120,113,108,0.25); color: #A8A29E; }
-
-  #file-name-display {
-    font-size: 0.72rem;
-    color: var(--accent);
-    text-align: center;
-    padding: 0.3rem 0;
-    display: none;
-  }
-
-  .divider-label {
-    font-size: 0.65rem;
-    color: var(--text-dim);
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    border-top: 1px solid var(--border);
-    padding-top: 1rem;
-  }
-
-  @media (max-width: 860px) {
-    .layout { grid-template-columns: 1fr; }
-    aside { border-right: none; border-bottom: 1px solid var(--border); }
-  }
+  /* HISTORIAL */
+  .hist-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.1rem;}
+  .hist-header h3{font-size:.82rem;font-weight:600;color:var(--text-muted);}
+  .hist-actions{display:flex;gap:.45rem;}
+  .btn-sm{background:transparent;border:1px solid var(--border);border-radius:6px;padding:.28rem .6rem;font-size:.7rem;color:var(--text-dim);cursor:pointer;transition:color .15s,border-color .15s;}
+  .btn-sm:hover{color:var(--accent);border-color:var(--accent-mid);}
+  .btn-sm.danger:hover{color:var(--danger);border-color:rgba(248,113,113,.4);}
+  .campaign-list{display:flex;flex-direction:column;gap:.45rem;margin-bottom:1.25rem;}
+  .campaign-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.8rem .9rem;display:flex;align-items:center;gap:.85rem;cursor:pointer;transition:border-color .15s;}
+  .campaign-card:hover{border-color:var(--accent-mid);}
+  .cc-icon{width:30px;height:30px;border-radius:7px;background:var(--accent-dim);display:flex;align-items:center;justify-content:center;flex-shrink:0;color:var(--accent);}
+  .cc-info{flex:1;min-width:0;}
+  .cc-name{font-size:.8rem;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .cc-meta{font-size:.66rem;color:var(--text-dim);margin-top:2px;font-family:var(--font-mono);}
+  .cc-device{font-size:.6rem;color:var(--text-dim);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px;}
+  .cc-stats{text-align:right;flex-shrink:0;}
+  .cc-max{font-size:.88rem;font-weight:700;font-family:var(--font-mono);color:var(--water-light);}
+  .cc-records{font-size:.62rem;color:var(--text-dim);}
+  .cc-del{background:transparent;border:none;cursor:pointer;color:var(--text-dim);padding:4px;border-radius:4px;flex-shrink:0;}
+  .cc-del:hover{color:var(--danger);}
+  .hist-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:.65rem;margin-bottom:1.1rem;}
+  .hist-sum-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.8rem;}
+  .hist-sum-card .val{font-size:1.05rem;font-weight:700;font-family:var(--font-mono);color:var(--accent);}
+  .hist-sum-card .lbl{font-size:.6rem;color:var(--text-dim);text-transform:uppercase;letter-spacing:.08em;margin-top:2px;}
+  #hist-loading{display:none;flex-direction:column;align-items:center;justify-content:center;height:180px;gap:.75rem;color:var(--text-dim);}
+  .spinner{width:28px;height:28px;border:2.5px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  #hist-lock-msg{display:none;flex-direction:column;align-items:center;justify-content:center;height:220px;color:var(--text-dim);gap:.5rem;}
+  #hist-lock-msg svg{width:40px;height:40px;opacity:.25;}
+  #hist-lock-msg p{font-size:.82rem;text-align:center;line-height:1.6;}
+  .toast{position:fixed;bottom:1.25rem;right:1.25rem;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:.7rem .9rem;font-size:.78rem;color:var(--text);box-shadow:0 4px 24px rgba(0,0,0,.4);transform:translateY(80px);opacity:0;transition:transform .25s,opacity .25s;z-index:1000;display:flex;align-items:center;gap:.45rem;max-width:300px;}
+  .toast.show{transform:translateY(0);opacity:1;}
+  .toast-dot{width:7px;height:7px;border-radius:50%;background:var(--success);flex-shrink:0;}
+  .toast-dot.warn{background:var(--warning);}
+  @media(max-width:800px){.layout{grid-template-columns:1fr;}aside{border-right:none;border-bottom:1px solid var(--border);max-height:none;}.hist-summary{grid-template-columns:1fr 1fr;}}
 </style>
 </head>
 <body>
+
+<!-- PIN MODAL -->
+<div id="pin-modal">
+  <div class="pin-box">
+    <button class="pin-close" onclick="closePinModal()">✕</button>
+    <div class="logo-big">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#0A1628" stroke-width="2.5" stroke-linecap="round">
+        <path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/>
+        <line x1="3" y1="10" x2="21" y2="10" stroke-dasharray="2 2"/>
+        <line x1="12" y1="4" x2="12" y2="10"/>
+      </svg>
+    </div>
+    <h2>Acceso propietario</h2>
+    <input type="password" id="pin-input" maxlength="8" placeholder="••••" inputmode="numeric">
+    <button class="export-btn" id="pin-btn" onclick="checkPin()">Ingresar</button>
+    <div id="pin-error"></div>
+  </div>
+</div>
 
 <header>
   <div class="logo-mark">
@@ -332,7 +515,13 @@
       <line x1="12" y1="4" x2="12" y2="10"/>
     </svg>
   </div>
-  <h1>AntLOG <span>— Procesador de nivel de canal</span></h1>
+  <h1>AntLOG <span>— Nivel de canal</span></h1>
+  <div class="header-right">
+    <div class="mem-indicator">☁ <span id="hdr-campaigns">0</span> camp. · <span id="hdr-records">0</span> reg.</div>
+    <div id="owner-badge">🔓 Propietario</div>
+    <button id="btn-lock-owner" onclick="lockApp()" style="display:none;background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-dim);padding:.28rem .55rem;font-size:.7rem;cursor:pointer;" title="Cerrar sesión propietario">🔒 Cerrar</button>
+    <button id="btn-open-pin" onclick="openPinModal()" style="background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--text-dim);padding:.28rem .55rem;font-size:.7rem;cursor:pointer;" title="Acceso propietario">⚙ Propietario</button>
+  </div>
 </header>
 
 <div class="layout">
@@ -343,40 +532,35 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
           <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M12 4v12M8 8l4-4 4 4"/>
         </svg>
-        <p>Arrastra tu archivo <em>.TXT</em><br>o haz clic para seleccionar</p>
+        <p>Arrastra tu <em>.TXT</em> o haz clic<br><small style="color:var(--text-dim)">Se guardará automáticamente en la nube</small></p>
       </div>
-      <input type="file" id="file-input" accept=".txt,.log,.csv">
+      <input type="file" id="file-input" accept=".txt,.log">
       <div id="file-name-display"></div>
     </div>
-
     <div>
       <div class="section-label">Configuración del sensor</div>
       <div class="config-block">
         <div class="field">
           <label>Distancia al lecho seco (cm)</label>
           <input type="number" id="bed-dist" value="188" min="0" step="1">
-          <span class="hint">Distancia sensor → fondo del canal sin agua</span>
+          <span class="hint">Sensor → fondo del canal sin agua</span>
         </div>
         <div class="field">
-          <label>Umbral de caudal mínimo (cm)</label>
+          <label>Umbral de flujo mínimo (cm)</label>
           <input type="number" id="threshold" value="2" min="0" step="0.5">
-          <span class="hint">Tirante mínimo para considerar flujo activo</span>
+          <span class="hint">Tirante mínimo para registrar flujo activo</span>
         </div>
       </div>
     </div>
-
     <div class="canal-preview">
-      <div class="section-label" style="margin-bottom:0.5rem">Vista de sección transversal</div>
-      <div class="canal-svg-wrap">
-        <svg id="canal-svg" viewBox="0 0 280 140" xmlns="http://www.w3.org/2000/svg" width="100%">
-          <rect width="280" height="140" fill="#0A1628" rx="6"/>
-          <text x="140" y="72" text-anchor="middle" fill="#4A7A9B" font-size="11" font-family="sans-serif">Carga un archivo</text>
-        </svg>
-      </div>
+      <div class="section-label" style="margin-bottom:.5rem">Sección transversal</div>
+      <svg id="canal-svg" viewBox="0 0 280 140" xmlns="http://www.w3.org/2000/svg" width="100%">
+        <rect width="280" height="140" fill="#0A1628" rx="6"/>
+        <text x="140" y="72" text-anchor="middle" fill="#4A7A9B" font-size="11" font-family="sans-serif">Carga un archivo</text>
+      </svg>
     </div>
-
     <div>
-      <div class="section-label">Estadísticas</div>
+      <div class="section-label">Estadísticas — sesión actual</div>
       <div class="stats-grid">
         <div class="stat-card"><div class="val" id="st-total">—</div><div class="lbl">Registros</div></div>
         <div class="stat-card water"><div class="val" id="st-flow">—</div><div class="lbl">Con flujo</div></div>
@@ -384,318 +568,84 @@
         <div class="stat-card dry"><div class="val" id="st-mean">—</div><div class="lbl">Tirante medio</div></div>
       </div>
     </div>
-
-    <div style="display:flex;flex-direction:column;gap:0.5rem">
+    <div style="display:flex;flex-direction:column;gap:.45rem">
       <button class="export-btn" id="btn-export-img" disabled onclick="exportChart()">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
         Exportar gráfico PNG
       </button>
-      <button class="export-csv" id="btn-export-csv" disabled onclick="exportCSV()">Exportar datos CSV</button>
+      <button class="export-csv" id="btn-export-csv" disabled onclick="exportCSV(false)">Exportar CSV sesión actual</button>
+      <button class="export-csv" onclick="exportCSV(true)">Exportar CSV historial completo</button>
     </div>
   </aside>
 
   <main>
     <div class="tabs">
-      <div class="tab active" onclick="switchTab('grafico', this)">Hidrograma</div>
-      <div class="tab" onclick="switchTab('tabla', this)">Tabla de datos</div>
+      <div class="tab active" onclick="switchTab('grafico',this)">Hidrograma</div>
+      <div class="tab" onclick="switchTab('tabla',this)">Tabla</div>
+      <div class="tab" onclick="switchTab('historial',this)">Historial ☁ <span class="tab-badge" id="hist-badge">0</span></div>
     </div>
 
     <div class="tab-content active" id="tab-grafico">
       <div class="empty-state" id="empty-chart">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-          <path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/><line x1="3" y1="8" x2="21" y2="8"/>
-          <line x1="3" y1="4" x2="3" y2="20"/><line x1="3" y1="20" x2="21" y2="20"/>
-        </svg>
-        <p>Carga un archivo .TXT para visualizar el hidrograma</p>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M3 18 Q6 14 9 18 Q12 22 15 18 Q18 14 21 18"/><line x1="3" y1="8" x2="21" y2="8"/><line x1="3" y1="4" x2="3" y2="20"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
+        <p>Carga un archivo .TXT<br>para visualizar el hidrograma</p>
       </div>
       <div id="chart-area" style="display:none">
-        <div class="chart-wrap">
-          <div class="chart-title">Tirante hidráulico (cm)</div>
-          <div class="chart-container">
-            <canvas id="myChart" role="img" aria-label="Hidrograma de tirante hidráulico en el canal">Hidrograma de nivel del canal.</canvas>
-          </div>
-        </div>
-        <div class="chart-wrap">
-          <div class="chart-title">Distancia sensor → superficie (cm)</div>
-          <div class="chart-container">
-            <canvas id="myChart2" role="img" aria-label="Serie temporal de distancia medida por el sensor">Distancia medida por el sensor ultrasónico.</canvas>
-          </div>
-        </div>
+        <div class="chart-wrap"><div class="chart-title">Tirante hidráulico — sesión actual (cm)</div><div class="chart-container"><canvas id="myChart"></canvas></div></div>
+        <div class="chart-wrap"><div class="chart-title">Distancia sensor → superficie (cm)</div><div class="chart-container"><canvas id="myChart2"></canvas></div></div>
       </div>
     </div>
 
     <div class="tab-content" id="tab-tabla">
       <div class="empty-state" id="empty-table">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/>
-          <line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/>
-        </svg>
-        <p>Carga un archivo .TXT para ver los datos procesados</p>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        <p>Carga un archivo .TXT para ver los datos</p>
       </div>
-      <div id="table-area" style="display:none; overflow-x:auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Fecha</th>
-              <th>Hora</th>
-              <th>Dist. sensor (cm)</th>
-              <th>Tirante h (cm)</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody id="data-tbody"></tbody>
-        </table>
+      <div id="table-area" style="display:none;overflow-x:auto">
+        <table><thead><tr><th>#</th><th>Fecha</th><th>Hora</th><th>Dist. sensor (cm)</th><th>Tirante h (cm)</th><th>Estado</th></tr></thead>
+        <tbody id="data-tbody"></tbody></table>
+      </div>
+    </div>
+
+    <div class="tab-content" id="tab-historial">
+      <div class="hist-header">
+        <h3>Campañas en Firestore (todos los dispositivos)</h3>
+        <div class="hist-actions">
+          <button class="btn-sm" onclick="exportCSV(true)">Exportar todo CSV</button>
+          <button class="btn-sm danger" onclick="clearAllHistory()">Borrar todo</button>
+        </div>
+      </div>
+
+      <div id="hist-lock-msg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <p>El historial en la nube solo es visible para el propietario.<br>Ingresa tu PIN para acceder.</p>
+        <button onclick="openPinModal()" style="background:var(--accent);color:var(--bg);border:none;border-radius:7px;padding:.5rem 1.1rem;font-size:.8rem;font-weight:700;cursor:pointer;margin-top:.5rem;">Ingresar PIN</button>
+      </div>
+
+      <div id="hist-loading"><div class="spinner"></div><span style="font-size:.8rem">Cargando desde Firestore…</span></div>
+
+      <div id="hist-summary-section" style="display:none">
+        <div class="hist-summary">
+          <div class="hist-sum-card"><div class="val" id="hs-campaigns">0</div><div class="lbl">Campañas</div></div>
+          <div class="hist-sum-card"><div class="val" id="hs-total">0</div><div class="lbl">Registros totales</div></div>
+          <div class="hist-sum-card"><div class="val" id="hs-maxh">—</div><div class="lbl">Tirante máx histórico</div></div>
+          <div class="hist-sum-card"><div class="val" id="hs-days">0</div><div class="lbl">Días monitoreados</div></div>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-title">Tirante máximo diario — serie histórica completa (cm)</div>
+          <div class="chart-container"><canvas id="histChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="campaign-list" id="campaign-list"></div>
+      <div class="empty-state" id="empty-hist" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        <p>Aún no hay campañas en la nube.<br>Sube un archivo .TXT — se guardará automáticamente.</p>
       </div>
     </div>
   </main>
 </div>
 
-<script>
-let parsedData = [];
-let chartInstance1 = null;
-let chartInstance2 = null;
-
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
-
-dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
-dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', e => {
-  e.preventDefault();
-  dropZone.classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) readFile(file);
-});
-fileInput.addEventListener('change', e => { if (e.target.files[0]) readFile(e.target.files[0]); });
-
-document.getElementById('bed-dist').addEventListener('input', () => { if (parsedData.length) processAndRender(); });
-document.getElementById('threshold').addEventListener('input', () => { if (parsedData.length) processAndRender(); });
-
-function readFile(file) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    const nameEl = document.getElementById('file-name-display');
-    nameEl.textContent = '📄 ' + file.name;
-    nameEl.style.display = 'block';
-    parseFile(e.target.result);
-  };
-  reader.readAsText(file);
-}
-
-function parseFile(text) {
-  const lines = text.trim().split('\n');
-  parsedData = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const m = trimmed.match(/AntLOG\s+(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+([\d.]+)\s*cm/i);
-    if (m) {
-      const [, dateStr, timeStr, distStr] = m;
-      const [d, mo, y] = dateStr.split('/');
-      const dt = new Date(`${y}-${mo}-${d}T${timeStr}`);
-      parsedData.push({ datetime: dt, date: dateStr, time: timeStr, dist: parseFloat(distStr) });
-    }
-  }
-  if (parsedData.length === 0) {
-    alert('No se encontraron registros válidos en el formato AntLOG. Verifica el archivo.');
-    return;
-  }
-  processAndRender();
-}
-
-function processAndRender() {
-  const bedDist = parseFloat(document.getElementById('bed-dist').value) || 188;
-  const threshold = parseFloat(document.getElementById('threshold').value) || 2;
-
-  const rows = parsedData.map(r => {
-    const h = bedDist - r.dist;
-    const flow = h > threshold;
-    return { ...r, h: Math.max(0, parseFloat(h.toFixed(1))), flow };
-  });
-
-  const withFlow = rows.filter(r => r.flow);
-  const maxH = rows.length ? Math.max(...rows.map(r => r.h)) : 0;
-  const meanH = withFlow.length ? (withFlow.reduce((a, b) => a + b.h, 0) / withFlow.length) : 0;
-
-  document.getElementById('st-total').textContent = rows.length;
-  document.getElementById('st-flow').textContent = withFlow.length;
-  document.getElementById('st-max').textContent = maxH.toFixed(1) + ' cm';
-  document.getElementById('st-mean').textContent = meanH.toFixed(1) + ' cm';
-
-  renderCanalSVG(bedDist, maxH, withFlow.length > 0 ? (withFlow[withFlow.length-1].h) : 0);
-  renderCharts(rows);
-  renderTable(rows);
-
-  document.getElementById('btn-export-img').disabled = false;
-  document.getElementById('btn-export-csv').disabled = false;
-}
-
-function renderCanalSVG(bedDist, maxH, currentH) {
-  const svg = document.getElementById('canal-svg');
-  const W = 280, H = 140;
-  const margin = { left: 30, right: 10, top: 20, bottom: 20 };
-  const cW = W - margin.left - margin.right;
-  const cH = H - margin.top - margin.bottom;
-
-  const sensorY = margin.top;
-  const bedY = margin.top + cH;
-  const totalRange = bedDist;
-  const waterY = bedDist > 0 ? bedY - (currentH / totalRange) * cH : bedY;
-
-  const trapW = cW * 0.85;
-  const trapX = margin.left + (cW - trapW) / 2;
-  const slopeOffset = 18;
-
-  let html = `<rect width="${W}" height="${H}" fill="#0A1628" rx="6"/>`;
-
-  html += `<line x1="${W/2}" y1="${sensorY}" x2="${W/2}" y2="${sensorY+10}" stroke="#38BDF8" stroke-width="1" stroke-dasharray="3 2"/>`;
-  html += `<text x="${W/2}" y="${sensorY - 4}" text-anchor="middle" fill="#38BDF8" font-size="8" font-family="sans-serif">SENSOR</text>`;
-
-  html += `<line x1="${margin.left}" y1="${sensorY + 12}" x2="${W - margin.right}" y2="${sensorY + 12}" stroke="#38BDF8" stroke-width="0.5" stroke-dasharray="2 3" opacity="0.4"/>`;
-
-  if (currentH > 0 && waterY < bedY) {
-    const wLeft = trapX + slopeOffset * ((bedY - waterY) / cH);
-    const wRight = trapX + trapW - slopeOffset * ((bedY - waterY) / cH);
-    html += `<polygon points="${wLeft},${waterY} ${wRight},${waterY} ${trapX + trapW - slopeOffset},${bedY} ${trapX + slopeOffset},${bedY}" fill="rgba(14,165,233,0.35)" stroke="none"/>`;
-    html += `<line x1="${wLeft}" y1="${waterY}" x2="${wRight}" y2="${waterY}" stroke="#7DD3FC" stroke-width="1.5"/>`;
-    html += `<text x="${W/2}" y="${waterY - 4}" text-anchor="middle" fill="#7DD3FC" font-size="8" font-family="sans-serif">h = ${currentH.toFixed(1)} cm</text>`;
-  }
-
-  html += `<polygon points="${trapX},${bedY - cH} ${trapX + trapW},${bedY - cH} ${trapX + trapW - slopeOffset},${bedY} ${trapX + slopeOffset},${bedY}" fill="none" stroke="#4A7A9B" stroke-width="1.5"/>`;
-
-  html += `<line x1="${trapX + slopeOffset - 2}" y1="${bedY}" x2="${trapX + trapW - slopeOffset + 2}" y2="${bedY}" stroke="#78716C" stroke-width="3"/>`;
-  html += `<text x="${W/2}" y="${bedY + 12}" text-anchor="middle" fill="#78716C" font-size="8" font-family="sans-serif">LECHO (${bedDist} cm)</text>`;
-
-  svg.innerHTML = html;
-}
-
-function renderCharts(rows) {
-  document.getElementById('empty-chart').style.display = 'none';
-  document.getElementById('chart-area').style.display = 'block';
-
-  const labels = rows.map(r => r.time);
-  const hData = rows.map(r => r.h);
-  const distData = rows.map(r => r.dist);
-
-  const tickColor = '#4A7A9B';
-  const gridColor = 'rgba(56,189,248,0.08)';
-
-  if (chartInstance1) chartInstance1.destroy();
-  chartInstance1 = new Chart(document.getElementById('myChart'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Tirante h (cm)',
-        data: hData,
-        borderColor: '#38BDF8',
-        backgroundColor: 'rgba(56,189,248,0.10)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: rows.length > 60 ? 0 : 3,
-        pointBackgroundColor: '#38BDF8',
-        borderWidth: 2,
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        backgroundColor: '#0F1F3D',
-        titleColor: '#7EA8C4',
-        bodyColor: '#F0F9FF',
-        borderColor: 'rgba(56,189,248,0.3)',
-        borderWidth: 1,
-        callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} cm` }
-      }},
-      scales: {
-        x: { ticks: { color: tickColor, font: { size: 10 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 12 }, grid: { color: gridColor } },
-        y: { ticks: { color: tickColor, font: { size: 10 }, callback: v => v + ' cm' }, grid: { color: gridColor }, beginAtZero: true }
-      }
-    }
-  });
-
-  if (chartInstance2) chartInstance2.destroy();
-  chartInstance2 = new Chart(document.getElementById('myChart2'), {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Distancia (cm)',
-        data: distData,
-        borderColor: '#FBBF24',
-        backgroundColor: 'rgba(251,191,36,0.08)',
-        fill: true,
-        tension: 0.3,
-        pointRadius: rows.length > 60 ? 0 : 3,
-        pointBackgroundColor: '#FBBF24',
-        borderWidth: 1.5,
-        borderDash: [],
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: {
-        backgroundColor: '#0F1F3D',
-        titleColor: '#7EA8C4',
-        bodyColor: '#F0F9FF',
-        borderColor: 'rgba(251,191,36,0.3)',
-        borderWidth: 1,
-        callbacks: { label: ctx => ` ${ctx.parsed.y.toFixed(1)} cm` }
-      }},
-      scales: {
-        x: { ticks: { color: tickColor, font: { size: 10 }, maxRotation: 45, autoSkip: true, maxTicksLimit: 12 }, grid: { color: gridColor } },
-        y: { ticks: { color: tickColor, font: { size: 10 }, callback: v => v + ' cm' }, grid: { color: gridColor }, reverse: true }
-      }
-    }
-  });
-}
-
-function renderTable(rows) {
-  document.getElementById('empty-table').style.display = 'none';
-  document.getElementById('table-area').style.display = 'block';
-  const tbody = document.getElementById('data-tbody');
-  tbody.innerHTML = rows.map((r, i) => `
-    <tr>
-      <td>${i + 1}</td>
-      <td>${r.date}</td>
-      <td>${r.time}</td>
-      <td class="num">${r.dist.toFixed(1)}</td>
-      <td class="${r.flow ? 'water-val' : 'dry-row'}">${r.h.toFixed(1)}</td>
-      <td><span class="badge ${r.flow ? 'badge-water' : 'badge-dry'}">${r.flow ? 'FLUJO' : 'SECO'}</span></td>
-    </tr>`).join('');
-}
-
-function switchTab(id, el) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
-  document.getElementById('tab-' + id).classList.add('active');
-}
-
-function exportChart() {
-  const canvas = document.getElementById('myChart');
-  const link = document.createElement('a');
-  link.download = 'hidrograma.png';
-  link.href = canvas.toDataURL('image/png');
-  link.click();
-}
-
-function exportCSV() {
-  const bedDist = parseFloat(document.getElementById('bed-dist').value) || 188;
-  const threshold = parseFloat(document.getElementById('threshold').value) || 2;
-  const rows = parsedData.map(r => {
-    const h = Math.max(0, parseFloat((bedDist - r.dist).toFixed(1)));
-    return { ...r, h, flow: h > threshold };
-  });
-  const header = 'fecha,hora,distancia_sensor_cm,tirante_cm,estado\n';
-  const body = rows.map(r => `${r.date},${r.time},${r.dist.toFixed(1)},${r.h.toFixed(1)},${r.flow ? 'FLUJO' : 'SECO'}`).join('\n');
-  const blob = new Blob([header + body], { type: 'text/csv;charset=utf-8;' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = 'datos_nivel_canal.csv';
-  link.click();
-}
-</script>
+<div class="toast" id="toast"><div class="toast-dot" id="toast-dot"></div><span id="toast-msg"></span></div>
 </body>
 </html>
